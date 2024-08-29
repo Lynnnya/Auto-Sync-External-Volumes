@@ -245,10 +245,14 @@ unsafe impl<T> Sync for UnsafeSync<T> {}
 
 /// A file system notification source for Windows using the Plug and Play manager.
 pub struct HcmNotifier<
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>) + Send + Clone,
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+        + Send
+        + Sync
+        + Clone
+        + 'static,
 > {
     handle: Option<UnsafeSync<HCMNOTIFICATION>>,
-    ctx: Arc<Pin<Box<Context>>>,
+    ctx: Pin<Box<Context>>,
     spawner: Arc<F>,
     _wmi: WmiObserver,
 }
@@ -318,15 +322,13 @@ impl<
             });
         });
 
-        let ctx = Arc::new(Box::pin(Context {
-            aborter,
-            new_device_queue: queue.clone(),
-            mount_mgr: Arc::new(MountMgr::new()?),
-        }));
-
         Ok(Self {
             handle: None,
-            ctx,
+            ctx: Box::pin(Context {
+                aborter,
+                new_device_queue: queue.clone(),
+                mount_mgr: Arc::new(MountMgr::new()?),
+            }),
             spawner: callback,
             _wmi: WmiObserver::new(inner_cb)?,
         })
@@ -434,7 +436,7 @@ impl<
         let ret = unsafe {
             CM_Register_Notification(
                 &filter as *const _,
-                Some(&**self.ctx as *const Context as *const c_void),
+                Some(&*self.ctx as *const Context as *const c_void),
                 Some(notify_proc),
                 &mut hnotify,
             )
@@ -466,6 +468,21 @@ impl<
         self.pause()?;
         self.ctx.aborter.clear_abort();
         Ok(())
+    }
+}
+
+impl<F> Drop for HcmNotifier<F>
+where
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    fn drop(&mut self) {
+        if let Err(e) = self.pause() {
+            log::error!("Failed to unregister notification: {}", e);
+        }
     }
 }
 
