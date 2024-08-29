@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use volume_tracker::{platform_init, windows::*, Device, FileSystem, NotificationSource};
+use volume_tracker::{platform_init, Device, FileSystem, NotificationSource, PlatformNotifier};
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -16,20 +14,18 @@ fn main() {
         .unwrap();
     let handle = rt.handle().clone();
 
-    let mut s = HcmNotifier::new(Box::new(
-        move |mount_point: VolumeName, d: DeviceName, p: Option<PathBuf>| {
-            let jh = handle.spawn(async move {
-                log::info!(
-                    "New sync task: volume: {}, device: {}, mounted: {:?}",
-                    mount_point.name(),
-                    d.name(),
-                    p
-                );
-            });
-            (true, Some(jh.abort_handle()))
-        },
-    ))
-    .expect("Failed to create HcmNotifier");
+    let mut s = PlatformNotifier::new(move |mount_point, d, p| {
+        let jh = handle.spawn(async move {
+            log::info!(
+                "New sync task: volume: {}, device: {}, mounted: {:?}",
+                mount_point.name(),
+                d.name(),
+                p
+            );
+        });
+        (true, Some(jh.abort_handle()))
+    })
+    .expect("Failed to create PlatformNotifier");
 
     s.list_spawn().unwrap();
     s.start().unwrap();

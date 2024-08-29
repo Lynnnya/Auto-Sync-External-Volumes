@@ -6,6 +6,7 @@
 use std::{
     fmt::{Debug, Display},
     hash::Hash,
+    marker::PhantomData,
     path::PathBuf,
 };
 
@@ -22,6 +23,22 @@ pub trait FileSystem: Debug + Display {
     fn name(&self) -> &str;
 }
 
+#[derive(Debug)]
+/// A dummy file system identifier.
+pub struct UnimplementedFileSystem;
+
+impl FileSystem for UnimplementedFileSystem {
+    fn name(&self) -> &str {
+        "unknown"
+    }
+}
+
+impl Display for UnimplementedFileSystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown")
+    }
+}
+
 /// A device identifier.
 pub trait Device: Debug {
     /// Get the device name.
@@ -29,6 +46,16 @@ pub trait Device: Debug {
 }
 
 impl Device for () {
+    fn name(&self) -> &str {
+        "unknown"
+    }
+}
+
+#[derive(Debug)]
+/// A dummy device identifier.
+pub struct UnimplementedDevice;
+
+impl Device for UnimplementedDevice {
     fn name(&self) -> &str {
         "unknown"
     }
@@ -44,6 +71,7 @@ impl<K: Hash + Eq> Default for AbortHandleHolder<K> {
     }
 }
 
+#[allow(dead_code)]
 impl<K: Hash + Eq> AbortHandleHolder<K> {
     pub(crate) fn insert(&self, key: K, handle: AbortHandle) {
         self.0.insert(key, handle);
@@ -113,6 +141,57 @@ where
     /// Stop the notification source and abort spawned tasks.
     fn reset(&mut self) -> Result<(), Self::Error>;
 }
+
+/// A dummy [`NotificationSource`] that does nothing on unimplemented platforms.
+pub struct UnimplementedNotifier<F>(PhantomData<F>);
+
+impl<F> NotificationSource<F> for UnimplementedNotifier<F>
+where
+    F: Fn(
+            UnimplementedFileSystem,
+            UnimplementedDevice,
+            Option<PathBuf>,
+        ) -> (bool, Option<AbortHandle>)
+        + Send
+        + Clone
+        + 'static,
+{
+    type FileSystem = UnimplementedFileSystem;
+    type Device = UnimplementedDevice;
+    type Error = &'static str;
+
+    fn new(_: F) -> Result<Self, Self::Error> {
+        Err("Unimplemented")
+    }
+
+    fn list(&self) -> Result<Vec<(Self::FileSystem, Self::Device, Option<PathBuf>)>, Self::Error> {
+        Err("Unimplemented")
+    }
+
+    fn list_spawn(&self) -> Result<(), Self::Error> {
+        Err("Unimplemented")
+    }
+
+    fn start(&mut self) -> Result<(), Self::Error> {
+        Err("Unimplemented")
+    }
+
+    fn pause(&mut self) -> Result<(), Self::Error> {
+        Err("Unimplemented")
+    }
+
+    fn reset(&mut self) -> Result<(), Self::Error> {
+        Err("Unimplemented")
+    }
+}
+
+#[cfg(windows)]
+/// A platform specific [`NotificationSource`].
+pub type PlatformNotifier<F> = windows::HcmNotifier<F>;
+
+#[cfg(not(windows))]
+/// A platform specific [`NotificationSource`].
+pub type PlatformNotifier<F> = UnimplementedNotifier<F>;
 
 /// Initialize the platform specific components.
 pub fn platform_init() -> Result<(), Box<dyn std::error::Error>> {

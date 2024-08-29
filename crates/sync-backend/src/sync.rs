@@ -108,9 +108,9 @@ impl SyncFS {
                     .total
                     .fetch_add(src_meta.len(), Ordering::Relaxed);
 
-                if cmp_file(dest.clone(), src.clone()).await.unwrap_or(false) {
+                if !cmp_file(dest.clone(), src.clone()).await.unwrap_or(false) {
                     if let Err(e) = tx.send_async(Ok((src.clone(), dest.clone()))).await {
-                        eprintln!("Failed to send copy job: {}", e);
+                        log::error!("Failed to send copy job: {}", e);
                     }
                 } else {
                     self.ctx
@@ -196,6 +196,8 @@ impl SyncFS {
                             .await
                             .map(|_| (src, dest))
                         });
+
+                        self.ctx.progress.files.done.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(Err(e)) => {
                         println!("Error occurred during discovery: {}", e);
@@ -349,7 +351,22 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
 
     match result {
         Ok(()) => {
-            progress.files.done.fetch_add(1, Ordering::Relaxed);
+            src_read.flush().await.map_err(|e| {
+                progress.files.failed.fetch_add(1, Ordering::Relaxed);
+                SyncError::CopyFailed {
+                    src: src.clone(),
+                    dest: dest.clone(),
+                    err: e,
+                }
+            })?;
+            dest_write.flush().await.map_err(|e| {
+                progress.files.failed.fetch_add(1, Ordering::Relaxed);
+                SyncError::CopyFailed {
+                    src: src.clone(),
+                    dest: dest.clone(),
+                    err: e,
+                }
+            })?;
             progress
                 .bytes
                 .done
@@ -373,5 +390,107 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
 
             Err(SyncError::CopyFailed { src, dest, err: e })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_cmp_file() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let src = tmp_dir.path().join("src");
+        let dest = tmp_dir.path().join("dest");
+
+        let mut src_file = File::create(&src).await.unwrap();
+        src_file.write_all(b"hello world").await.unwrap();
+
+        let mut dest_file = File::create(&dest).await.unwrap();
+        dest_file.write_all(b"hello world").await.unwrap();
+
+        assert!(cmp_file(src.clone(), dest.clone()).await.unwrap());
+
+        src_file.write_all(b"hello world").await.unwrap();
+
+        assert!(!cmp_file(src.clone(), dest.clone()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_copy_file() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let src = tmp_dir.path().join("src");
+        let dest = tmp_dir.path().join("dest");
+
+        let mut src_file = File::create(&src).await.unwrap();
+        src_file.write_all(b"hello world").await.unwrap();
+
+        copy_file(
+            "test",
+            dest.clone(),
+            src.clone(),
+            None,
+            &GlobalProgress::default(),
+            &|_, _| {},
+        )
+        .await
+        .unwrap();
+
+        let mut dest_file = File::open(&dest).await.unwrap();
+        let mut buf = Vec::new();
+        dest_file.read_to_end(&mut buf).await.unwrap();
+
+        assert_eq!(buf, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn test_sync() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let src = tmp_dir.path().join("src");
+        let dest = tmp_dir.path().join("dest");
+
+        let src_subdir = src.join("subdir");
+        let dest_subdir = dest.join("subdir");
+        tokio::fs::create_dir_all(&src_subdir).await.unwrap();
+
+        let src_file = src.join("file");
+        let dest_file = dest.join("file");
+        tokio::fs::write(&src_file, b"hello world").await.unwrap();
+
+        let src_subfile = src_subdir.join("subfile");
+        let dest_subfile = dest_subdir.join("subfile");
+        tokio::fs::write(&src_subfile, b"goodbye world")
+            .await
+            .unwrap();
+
+        let sync = SyncFS::new(src.clone(), dest.clone(), 1);
+
+        let done = AtomicU64::new(0);
+
+        sync.sync(
+            |gp, _| {
+                done.store(gp.files.done.load(Ordering::Relaxed), Ordering::Relaxed);
+            },
+            &|e| {
+                panic!("Error occurred: {:?}", e);
+            },
+        )
+        .await;
+
+        assert_eq!(done.into_inner(), 2);
+
+        let mut dest_file = File::open(&dest_file).await.unwrap();
+
+        let mut buf = Vec::new();
+        dest_file.read_to_end(&mut buf).await.unwrap();
+
+        assert_eq!(buf, b"hello world");
+
+        let mut dest_subfile = File::open(&dest_subfile).await.unwrap();
+
+        let mut buf = Vec::new();
+        dest_subfile.read_to_end(&mut buf).await.unwrap();
+
+        assert_eq!(buf, b"goodbye world");
     }
 }
