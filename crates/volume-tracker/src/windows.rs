@@ -107,7 +107,7 @@ impl VolumeName {
                 IOCTL_MOUNTDEV_QUERY_DEVICE_NAME,
                 None,
                 0,
-                Some(&mut buf as *mut _ as *mut c_void),
+                Some(&mut buf as *mut MOUNTDEV_NAME as *mut _),
                 std::mem::size_of_val(&buf) as u32,
                 None,
                 None,
@@ -414,7 +414,7 @@ impl<
         let ret = unsafe {
             CM_Register_Notification(
                 &filter as *const _,
-                Some(&*self.ctx as *const Context as *const c_void),
+                Some(&*self.ctx as *const Context as *const _),
                 Some(notify_proc),
                 &mut hnotify,
             )

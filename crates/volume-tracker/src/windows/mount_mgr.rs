@@ -115,10 +115,10 @@ impl MountMgr {
                     return Err(Error::Win32ErrorOnIoctl("IOCTL_MOUNTMGR_QUERY_POINTS", e));
                 }
 
-                let out_ptr = out_buf.as_ptr() as *const MOUNTMGR_MOUNT_POINTS;
+                let out_ptr = &*(out_buf.as_ptr() as *const MOUNTMGR_MOUNT_POINTS);
 
-                for i in 0..(*out_ptr).number_of_mount_points {
-                    let point = &*(*out_ptr).points.as_ptr().add(i as usize);
+                for i in 0..out_ptr.number_of_mount_points {
+                    let point = &*out_ptr.points.as_ptr().add(i as usize);
                     if point.symbolic_link_name_offset == 0 {
                         continue;
                     }
