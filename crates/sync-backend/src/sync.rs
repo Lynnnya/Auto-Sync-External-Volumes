@@ -91,7 +91,7 @@ impl SyncFS {
                 Err(e) => {
                     tx.send_async(Err(SyncError::StatFailed(src.clone(), e)))
                         .await
-                        .unwrap();
+                        .expect("Result receiver dropped");
                     return;
                 }
             };
@@ -134,7 +134,7 @@ impl SyncFS {
                             err: e,
                         }))
                         .await
-                        .unwrap();
+                        .expect("Result receiver dropped");
                         return;
                     }
                 }
@@ -143,7 +143,7 @@ impl SyncFS {
                     Err(e) => {
                         tx.send_async(Err(SyncError::StatFailed(src.clone(), e)))
                             .await
-                            .unwrap();
+                            .expect("Result receiver dropped");
                         return;
                     }
                 };
@@ -152,7 +152,7 @@ impl SyncFS {
                         Err(e) => {
                             tx.send_async(Err(SyncError::StatFailed(src.clone(), e)))
                                 .await
-                                .unwrap();
+                                .expect("Result receiver dropped");
                             return;
                         }
                         Ok(None) => break,

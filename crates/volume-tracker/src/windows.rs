@@ -13,9 +13,9 @@ type ULONG = c_ulong;
 #[allow(clippy::upper_case_acronyms)]
 type USHORT = c_ushort;
 
-use dashmap::DashMap;
+use array::PzzWSTRIter;
+use dashmap::DashSet;
 use mount_mgr::MountMgr;
-use tokio::task::AbortHandle;
 use windows::{
     core::PCWSTR,
     Win32::{
@@ -36,23 +36,11 @@ use windows::{
 };
 use wmi::WmiObserver;
 
-use crate::{AbortHandleHolder, Device, FileSystem, NotificationSource};
+use crate::{AbortHandleHolder, Device, FileSystem, NotificationSource, SpawnerDisposition};
 
+pub(crate) mod array;
 pub(crate) mod mount_mgr;
 pub(crate) mod wmi;
-
-unsafe fn decode_pzzwstr(mut ptr: *const u16, out: &mut Vec<String>) {
-    while *ptr != 0 {
-        let mut end_ptr = ptr;
-        while *end_ptr != 0 {
-            end_ptr = end_ptr.add(1);
-        }
-
-        let slice = std::slice::from_raw_parts(ptr, end_ptr.offset_from(ptr) as usize);
-        out.push(String::from_utf16_lossy(slice));
-        ptr = end_ptr.add(1);
-    }
-}
 
 /// The root path name of a volume, like '\\?\Volume{GUID}'.
 #[derive(Clone)]
@@ -245,7 +233,7 @@ unsafe impl<T> Sync for UnsafeSync<T> {}
 
 /// A file system notification source for Windows using the Plug and Play manager.
 pub struct HcmNotifier<
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Sync
         + Clone
@@ -259,12 +247,12 @@ pub struct HcmNotifier<
 
 struct Context {
     aborter: Arc<AbortHandleHolder<VolumeName>>,
-    new_device_queue: Arc<DashMap<VolumeName, ()>>,
+    new_device_queue: Arc<DashSet<VolumeName>>,
     mount_mgr: Arc<MountMgr>,
 }
 
 impl<
-        F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+        F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
             + Send
             + Sync
             + Clone
@@ -276,7 +264,7 @@ impl<
     type Error = Error;
 
     fn new(callback: F) -> Result<Self, Self::Error> {
-        let queue = Arc::new(DashMap::<VolumeName, ()>::new());
+        let queue = Arc::new(DashSet::<VolumeName>::new());
         let queue_clone = queue.clone();
         let aborter = Arc::new(AbortHandleHolder::default());
         let aborter_clone = aborter.clone();
@@ -286,47 +274,40 @@ impl<
         let inner_cb = Box::new(move || {
             log::debug!("new device callback");
             aborter_clone.gc();
-            let mut remove = Vec::new();
-            for rec in queue_clone.iter() {
-                let (mp, _) = rec.pair();
+
+            queue_clone.retain(|mp| {
                 let d = match mp.device_name() {
                     Ok(device) => device,
                     Err(e) => {
-                        log::error!("Failed to get device name for volume {:?}: {}", mp, e);
-                        continue;
+                        log::error!("Failed to get device name for volume {:?}: {}", *mp, e);
+                        return false;
                     }
                 };
+
                 let dos_paths = match mp.dos_paths() {
                     Ok(paths) => paths.into_iter().map(PathBuf::from).next(),
                     Err(e) => {
-                        log::warn!("Failed to get DOS paths for volume {:?}: {}", mp, e);
+                        log::warn!("Failed to get DOS paths for volume {:?}: {}", *mp, e);
                         None
                     }
                 };
+
                 match callback_clone(mp.clone(), d.clone(), dos_paths) {
-                    (true, Some(handle)) => {
+                    SpawnerDisposition::Spawned(handle) => {
                         aborter_clone.insert(mp.clone(), handle);
-                        remove.push(mp.clone());
+                        false
                     }
-                    (true, None) => {
-                        remove.push(mp.clone());
-                    }
-                    (false, Some(handle)) => {
-                        aborter_clone.insert(mp.clone(), handle);
-                    }
-                    _ => {}
+                    SpawnerDisposition::Ignore => false,
+                    SpawnerDisposition::Skip => true,
                 }
-            }
-            remove.into_iter().for_each(|mp| {
-                queue_clone.remove(&mp);
-            });
+            })
         });
 
         Ok(Self {
             handle: None,
             ctx: Box::pin(Context {
                 aborter,
-                new_device_queue: queue.clone(),
+                new_device_queue: queue,
                 mount_mgr: Arc::new(MountMgr::new()?),
             }),
             spawner: callback,
@@ -371,15 +352,10 @@ impl<
                 return Err(Error::SyscallFailed(ret.0));
             }
 
-            let mut out = Vec::new();
-
-            unsafe { decode_pzzwstr(buffer.as_ptr(), &mut out) };
-
-            return Ok(out
-                .into_iter()
+            return Ok(unsafe { PzzWSTRIter::new(buffer.as_ptr()) }
                 .filter_map(|s| {
                     let mp = VolumeName {
-                        nonpersistent_name: s,
+                        nonpersistent_name: String::from_utf16_lossy(s),
                         mount_mgr: self.ctx.mount_mgr.clone(),
                     };
                     let device = match mp.device_name() {
@@ -410,7 +386,9 @@ impl<
         self.ctx.aborter.clear_abort();
         let list = self.list()?;
         for (mp, d, dos_paths) in list {
-            if let (true, Some(handle)) = (self.spawner)(mp.clone(), d.clone(), dos_paths) {
+            if let SpawnerDisposition::Spawned(handle) =
+                (self.spawner)(mp.clone(), d.clone(), dos_paths)
+            {
                 self.ctx.aborter.insert(mp, handle);
             }
         }
@@ -473,7 +451,7 @@ impl<
 
 impl<F> Drop for HcmNotifier<F>
 where
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Sync
         + Clone
@@ -515,11 +493,11 @@ unsafe extern "system" fn notify_proc(
 
             match action {
                 CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL => {
-                    log::info!("new device arrival: {:?}", mp);
-                    ctx.new_device_queue.insert(mp.clone(), ());
+                    log::info!("new device arrival: {:?}", &mp);
+                    ctx.new_device_queue.insert(mp);
                 }
                 CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => {
-                    log::info!("device removal: {:?}", mp);
+                    log::info!("device removal: {:?}", &mp);
                     ctx.new_device_queue.remove(&mp);
                     ctx.aborter.remove_abort(&mp);
                 }

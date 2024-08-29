@@ -1,4 +1,6 @@
-use volume_tracker::{platform_init, Device, FileSystem, NotificationSource, PlatformNotifier};
+use volume_tracker::{
+    platform_init, Device, FileSystem, NotificationSource, PlatformNotifier, SpawnerDisposition,
+};
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -23,7 +25,7 @@ fn main() {
                 p
             );
         });
-        (true, Some(jh.abort_handle()))
+        SpawnerDisposition::Spawned(jh.abort_handle())
     })
     .expect("Failed to create PlatformNotifier");
 

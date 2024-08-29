@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(clippy::unwrap_used)]
 //! A library for synchronizing files between two directories.
 
 use std::path::PathBuf;

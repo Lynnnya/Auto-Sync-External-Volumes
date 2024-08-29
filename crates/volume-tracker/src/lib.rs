@@ -106,6 +106,16 @@ impl<K: Hash + Eq> Drop for AbortHandleHolder<K> {
     }
 }
 
+/// The disposition of a spawner callback.
+pub enum SpawnerDisposition {
+    /// A task has been spawned to handle the file system.
+    Spawned(AbortHandle),
+    /// The file system should be ignored.
+    Ignore,
+    /// The file system should be skipped but next time a file system change is detected, the callback should be called again.
+    Skip,
+}
+
 /// A source of notifications for file system changes.
 ///
 /// `F` is a callback that takes a file system and a device,
@@ -114,7 +124,7 @@ impl<K: Hash + Eq> Drop for AbortHandleHolder<K> {
 /// and can be used to abort the task when the file system is removed.
 pub trait NotificationSource<F>: Sized
 where
-    F: Fn(Self::FileSystem, Self::Device, Option<PathBuf>) -> (bool, Option<AbortHandle>)
+    F: Fn(Self::FileSystem, Self::Device, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Clone
         + 'static,
@@ -147,11 +157,7 @@ pub struct UnimplementedNotifier<F>(PhantomData<F>);
 
 impl<F> NotificationSource<F> for UnimplementedNotifier<F>
 where
-    F: Fn(
-            UnimplementedFileSystem,
-            UnimplementedDevice,
-            Option<PathBuf>,
-        ) -> (bool, Option<AbortHandle>)
+    F: Fn(UnimplementedFileSystem, UnimplementedDevice, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Clone
         + 'static,
