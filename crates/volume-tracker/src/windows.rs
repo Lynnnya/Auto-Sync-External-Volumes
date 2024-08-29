@@ -484,7 +484,7 @@ unsafe extern "system" fn notify_proc(
             let data = &*evt_data;
             let name = data.u.DeviceInterface.SymbolicLink.as_ptr();
             let mut end_ptr = evt_data.byte_add(evt_data_size as usize) as *const u16;
-            while (*end_ptr.sub(1)) == 0 && end_ptr > name {
+            while end_ptr > name && (*end_ptr.sub(1)) == 0 {
                 end_ptr = end_ptr.sub(1);
             }
 
