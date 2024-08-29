@@ -5,7 +5,7 @@ use windows::{
 
 #[implement(IWbemObjectSink)]
 struct Notifier {
-    callback: Box<dyn Fn()>,
+    callback: Box<dyn Fn() + Send + Sync>,
 }
 
 impl IWbemObjectSink_Impl for Notifier_Impl {
@@ -67,7 +67,7 @@ pub struct WmiObserver {
 }
 
 impl WmiObserver {
-    pub fn new(callback: Box<dyn Fn()>) -> Result<Self> {
+    pub fn new(callback: Box<dyn Fn() + Send + Sync>) -> Result<Self> {
         unsafe {
             let iwbem_locator: IWbemLocator =
                 CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;

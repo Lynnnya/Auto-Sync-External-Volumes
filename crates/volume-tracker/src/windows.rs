@@ -493,8 +493,8 @@ unsafe extern "system" fn notify_proc(
     evt_data: *const CM_NOTIFY_EVENT_DATA,
     evt_data_size: u32,
 ) -> u32 {
-    let ctx = ctx as *mut Context;
-    (*ctx).aborter.gc();
+    let ctx = &*(ctx as *const Context);
+    ctx.aborter.gc();
 
     match action {
         CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL | CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => {
@@ -510,17 +510,18 @@ unsafe extern "system" fn notify_proc(
                     name,
                     end_ptr.offset_from(name) as usize,
                 )),
-                mount_mgr: (*ctx).mount_mgr.clone(),
+                mount_mgr: ctx.mount_mgr.clone(),
             };
 
             match action {
                 CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL => {
                     log::info!("new device arrival: {:?}", mp);
-                    (*ctx).new_device_queue.insert(mp.clone(), ());
+                    ctx.new_device_queue.insert(mp.clone(), ());
                 }
                 CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => {
                     log::info!("device removal: {:?}", mp);
-                    (*ctx).aborter.remove_abort(&mp);
+                    ctx.new_device_queue.remove(&mp);
+                    ctx.aborter.remove_abort(&mp);
                 }
                 _ => unreachable!(),
             }
