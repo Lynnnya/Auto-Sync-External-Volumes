@@ -63,16 +63,16 @@ impl Device for UnimplementedDevice {
 
 #[derive(Debug)]
 /// A holder for [`AbortHandle`]s, used to cancel tasks whose file systems have been removed.
-pub struct AbortHandleHolder<K: Hash + Eq>(DashMap<K, AbortHandle>);
+pub struct AbortHandleHolder<K: Hash + Eq + Display>(DashMap<K, AbortHandle>);
 
-impl<K: Hash + Eq> Default for AbortHandleHolder<K> {
+impl<K: Hash + Eq + Display> Default for AbortHandleHolder<K> {
     fn default() -> Self {
         Self(DashMap::new())
     }
 }
 
 #[allow(dead_code)]
-impl<K: Hash + Eq> AbortHandleHolder<K> {
+impl<K: Hash + Eq + Display> AbortHandleHolder<K> {
     pub(crate) fn insert(&self, key: K, handle: AbortHandle) {
         self.0.insert(key, handle);
     }
@@ -93,6 +93,9 @@ impl<K: Hash + Eq> AbortHandleHolder<K> {
     /// Clear all [`AbortHandle`]s and abort the associated tasks.
     pub fn clear_abort(&self) {
         self.0.iter().for_each(|rec| {
+            if !rec.value().is_finished() {
+                log::info!("Aborting task for volume: {}", rec.key());
+            }
             rec.value().abort();
         });
 
@@ -100,7 +103,7 @@ impl<K: Hash + Eq> AbortHandleHolder<K> {
     }
 }
 
-impl<K: Hash + Eq> Drop for AbortHandleHolder<K> {
+impl<K: Hash + Eq + Display> Drop for AbortHandleHolder<K> {
     fn drop(&mut self) {
         self.clear_abort();
     }

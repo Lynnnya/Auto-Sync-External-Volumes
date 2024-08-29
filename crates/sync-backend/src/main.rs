@@ -1,3 +1,6 @@
+use std::sync::{Arc, Mutex};
+
+use tokio::task::JoinSet;
 use volume_tracker::{
     platform_init, Device, FileSystem, NotificationSource, PlatformNotifier, SpawnerDisposition,
 };
@@ -15,17 +18,22 @@ fn main() {
         .build()
         .unwrap();
     let handle = rt.handle().clone();
+    let jh = Arc::new(Mutex::new(JoinSet::new()));
+    let jh2 = jh.clone();
 
-    let mut s = PlatformNotifier::new(move |mount_point, d, p| {
-        let jh = handle.spawn(async move {
-            log::info!(
-                "New sync task: volume: {}, device: {}, mounted: {:?}",
-                mount_point.name(),
-                d.name(),
-                p
-            );
-        });
-        SpawnerDisposition::Spawned(jh.abort_handle())
+    let mut s = PlatformNotifier::new(move |v, d, p| {
+        let ah = jh.lock().unwrap().spawn_on(
+            async move {
+                log::info!(
+                    "New sync task: volume: {}, device: {}, mounted: {:?}",
+                    v.name(),
+                    d.name(),
+                    p
+                );
+            },
+            &handle,
+        );
+        SpawnerDisposition::Spawned(ah)
     })
     .expect("Failed to create PlatformNotifier");
 
@@ -35,14 +43,39 @@ fn main() {
     log::info!("Successfully set up watcher!");
 
     rt.block_on(async {
-        eprintln!("Press ctrl-c to exit");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("ctrl-c received, exiting");
+        log::info!("Press ctrl-c to exit");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to wait for ctrl-c");
+        log::info!("Received ctrl-c, shutting down, press ctrl-c again to abort");
+        s.pause().unwrap();
+        loop {
+            let mut jh2 = jh2.lock().unwrap();
+            tokio::select! {
+                res = jh2.join_next() => {
+                    match res {
+                        None => {
+                            log::info!("All tasks completed, shutting down");
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            if e.is_cancelled() {
+                                log::warn!("Task cancelled");
+                            } else {
+                                log::error!("Task failed: {:?}", e);
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    log::warn!("Received ctrl-c again, aborting");
+                    break;
+                }
             }
         }
     });
 
-    log::debug!("Cleaning up");
+    log::info!("Cleaning up");
     s.reset().unwrap();
 }

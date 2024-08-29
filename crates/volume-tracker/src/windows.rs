@@ -438,6 +438,7 @@ impl<
                 }
             }
         }
+        self.ctx.aborter.gc();
 
         Ok(())
     }
