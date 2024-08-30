@@ -294,7 +294,7 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
         None => None,
     };
 
-    let mut buf = [0u8; 128 << 10];
+    let mut buf = vec![0u8; 128 << 10];
 
     let mut src_file = match File::open(&src).await {
         Ok(f) => f,
