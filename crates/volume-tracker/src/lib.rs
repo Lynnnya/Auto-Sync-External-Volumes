@@ -1,6 +1,12 @@
 #![warn(missing_docs)]
-#![warn(clippy::unwrap_used)]
-#![warn(clippy::expect_used)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::unreadable_literal,
+    clippy::items_after_statements
+)]
+
 //! Operating system specific file system notification sources.
 
 use std::{
@@ -16,6 +22,8 @@ use tokio::task::AbortHandle;
 #[cfg(windows)]
 /// Windows specific file system notification sources.
 pub mod windows;
+
+pub(crate) mod mem;
 
 /// A file system identifier.
 pub trait FileSystem: Debug + Display {

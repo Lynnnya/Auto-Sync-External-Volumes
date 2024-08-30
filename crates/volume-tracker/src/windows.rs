@@ -2,7 +2,7 @@ use std::{
     ffi::{c_ulong, c_ushort, c_void},
     fmt::{Debug, Display},
     hash::Hash,
-    marker::{PhantomData, PhantomPinned},
+    marker::PhantomPinned,
     ops::{Deref, DerefMut},
     path::PathBuf,
     pin::Pin,
@@ -28,14 +28,14 @@ use windows::{
             CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0, CM_NOTIFY_FILTER_0_2,
             CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_BUFFER_SMALL, CR_SUCCESS, HCMNOTIFICATION,
         },
-        Foundation::*,
+        Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, MAX_PATH},
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS,
         },
         System::{Ioctl::GUID_DEVINTERFACE_VOLUME, IO::DeviceIoControl},
     },
 };
-use wmi::WmiObserver;
+use wmi::Observer;
 
 use crate::{AbortHandleHolder, Device, FileSystem, NotificationSource, SpawnerDisposition};
 
@@ -86,7 +86,7 @@ impl VolumeName {
                 FILE_ATTRIBUTE_NORMAL,
                 HANDLE(std::ptr::null_mut()),
             )
-            .map_err(Error::Win32Error)?
+            .map_err(|e| Error::Win32Error("CreateFileW", e))?
         });
 
         #[repr(C)]
@@ -103,12 +103,13 @@ impl VolumeName {
             name: [0u16; MAX_PATH as usize],
         };
         let volume_name = unsafe {
+            #[allow(clippy::cast_possible_truncation)]
             DeviceIoControl(
                 *handle,
                 IOCTL_MOUNTDEV_QUERY_DEVICE_NAME,
                 None,
                 0,
-                Some(&mut buf as *mut MOUNTDEV_NAME as *mut _),
+                Some(std::ptr::from_mut::<MOUNTDEV_NAME>(&mut buf).cast()),
                 std::mem::size_of_val(&buf) as u32,
                 None,
                 None,
@@ -157,7 +158,7 @@ impl DeviceName {
         Ok(mount_mgr
             .query_points(&self.0.encode_utf16().collect::<Vec<_>>())?
             .into_iter()
-            .filter_map(|s| find_dos_path(&s).map(|s| s.to_string()))
+            .filter_map(|s| find_dos_path(&s).map(std::string::ToString::to_string))
             .collect())
     }
 }
@@ -191,8 +192,8 @@ impl DerefMut for DropHandle {
     }
 }
 
-#[inline(always)]
 /// Try to find a DOS path in a string. Like 'C:'.
+#[must_use]
 pub fn find_dos_path(input: &str) -> Option<&str> {
     input.strip_prefix(r"\DosDevices\")
 }
@@ -202,16 +203,29 @@ pub fn find_dos_path(input: &str) -> Option<&str> {
 #[allow(missing_docs)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("system error: code {0}")]
-    SyscallFailed(u32),
-    #[error("win32 error: {0}")]
-    Win32Error(#[from] windows::core::Error),
-    #[error("win32 error on ioctl: {0}: {1}")]
+    #[error("syscall failed: {0}() returned {1}")]
+    SyscallFailed(&'static str, u32),
+    #[error("win32 error on {0}() returned {1}")]
+    Win32Error(&'static str, windows::core::Error),
+    #[error("win32 error on ioctl {0}: {1}")]
     Win32ErrorOnIoctl(&'static str, windows::core::Error),
     #[error("received invalid utf-16 string")]
     DecodeUtf16Error,
     #[error("Too many retries")]
     TooManyRetries,
+    #[error("Data too large")]
+    Overflow,
+    #[error("Allocation failed")]
+    AllocFailed,
+}
+
+impl Error {
+    pub(crate) fn win32(name: &'static str, e: windows::core::Error) -> Self {
+        Self::Win32Error(name, e)
+    }
+    pub(crate) fn syscall(name: &'static str, e: u32) -> Self {
+        Self::SyscallFailed(name, e)
+    }
 }
 
 struct UnsafeSync<T>(T);
@@ -240,8 +254,7 @@ pub struct HcmNotifier<
     handle: Option<UnsafeSync<HCMNOTIFICATION>>,
     ctx: Pin<Box<Context>>,
     spawner: Arc<F>,
-    _wmi: WmiObserver<'a>,
-    _phantom: std::marker::PhantomData<&'a ()>,
+    wmi: Observer<'a>,
 }
 
 struct Context {
@@ -297,7 +310,7 @@ impl<
                     SpawnerDisposition::Ignore => false,
                     SpawnerDisposition::Skip => true,
                 }
-            })
+            });
         });
 
         Ok(Self {
@@ -309,8 +322,7 @@ impl<
                 _pin: PhantomPinned,
             }),
             spawner: callback,
-            _wmi: WmiObserver::new(inner_cb)?,
-            _phantom: PhantomData,
+            wmi: Observer::new(inner_cb)?,
         })
     }
 
@@ -323,21 +335,21 @@ impl<
             let mut char_count = 0u32;
             let ret = unsafe {
                 CM_Get_Device_Interface_List_SizeW(
-                    &mut char_count as *mut _,
-                    &GUID_DEVINTERFACE_VOLUME as *const _,
+                    std::ptr::from_mut(&mut char_count),
+                    std::ptr::from_ref(&GUID_DEVINTERFACE_VOLUME),
                     PCWSTR::null(),
                     CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
                 )
             };
             if ret != CR_SUCCESS {
-                return Err(Error::SyscallFailed(ret.0));
+                return Err(Error::syscall("CM_Get_Device_Interface_List_SizeW", ret.0));
             }
 
             let mut buffer = vec![0u16; char_count as usize];
 
             let ret = unsafe {
                 CM_Get_Device_Interface_ListW(
-                    &GUID_DEVINTERFACE_VOLUME as *const _,
+                    std::ptr::from_ref(&GUID_DEVINTERFACE_VOLUME),
                     PCWSTR::null(),
                     &mut buffer,
                     CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
@@ -348,7 +360,7 @@ impl<
                 if ret == CR_BUFFER_SMALL {
                     continue;
                 }
-                return Err(Error::SyscallFailed(ret.0));
+                return Err(Error::syscall("CM_Get_Device_Interface_ListW", ret.0));
             }
 
             return Ok(unsafe { PzzWSTRIter::new(buffer.as_ptr()) }
@@ -357,12 +369,9 @@ impl<
                         nonpersistent_name: String::from_utf16_lossy(s),
                         mount_mgr: self.ctx.mount_mgr.clone(),
                     };
-                    let device = match mp.device_name() {
-                        Ok(device) => device,
-                        Err(_) => {
-                            log::error!("Failed to get device name for volume: {:?}", mp);
-                            return None;
-                        }
+                    let Ok(device) = mp.device_name() else {
+                        log::error!("Failed to get device name for volume: {:?}", mp);
+                        return None;
                     };
 
                     let dos_paths = match mp.dos_paths() {
@@ -396,7 +405,10 @@ impl<
     }
 
     fn start(&mut self) -> Result<(), Self::Error> {
+        self.wmi.register()?;
+
         let filter = CM_NOTIFY_FILTER {
+            #[allow(clippy::cast_possible_truncation)]
             cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
             Flags: 0,
             FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
@@ -412,14 +424,14 @@ impl<
 
         let ret = unsafe {
             CM_Register_Notification(
-                &filter as *const _,
-                Some(&*self.ctx as *const Context as *const _),
+                std::ptr::from_ref(&filter),
+                Some(std::ptr::from_ref::<Context>(&*self.ctx).cast()),
                 Some(notify_proc),
                 &mut hnotify,
             )
         };
         if ret != CR_SUCCESS {
-            return Err(Error::SyscallFailed(ret.0));
+            return Err(Error::syscall("CM_Register_Notification", ret.0));
         }
 
         self.handle = Some(UnsafeSync(hnotify));
@@ -428,12 +440,13 @@ impl<
     }
 
     fn pause(&mut self) -> Result<(), Self::Error> {
+        self.wmi.unregister()?;
         if let Some(handle) = self.handle.take() {
             unsafe {
                 let ret = CM_Unregister_Notification(*handle);
 
                 if ret != CR_SUCCESS {
-                    return Err(Error::SyscallFailed(ret.0));
+                    return Err(Error::syscall("CM_Unregister_Notification", ret.0));
                 }
             }
         }
@@ -467,18 +480,27 @@ unsafe extern "system" fn notify_proc(
     evt_data: *const CM_NOTIFY_EVENT_DATA,
     evt_data_size: u32,
 ) -> u32 {
-    let ctx = &*(ctx as *const Context);
+    #[allow(clippy::expect_used)]
+    let ctx = ctx
+        .cast::<Context>()
+        .as_ref()
+        .expect("invalid context pointer");
     ctx.aborter.gc();
 
     match action {
         CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL | CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => {
-            let data = &*evt_data;
+            #[allow(clippy::expect_used)]
+            let data = evt_data
+                .cast::<CM_NOTIFY_EVENT_DATA>()
+                .as_ref()
+                .expect("invalid event data");
             let name = data.u.DeviceInterface.SymbolicLink.as_ptr();
-            let mut end_ptr = evt_data.byte_add(evt_data_size as usize) as *const u16;
+            let mut end_ptr = evt_data.byte_add(evt_data_size as usize).cast::<u16>();
             while end_ptr > name && (*end_ptr.sub(1)) == 0 {
                 end_ptr = end_ptr.sub(1);
             }
 
+            #[allow(clippy::cast_sign_loss)]
             let mp = VolumeName {
                 nonpersistent_name: String::from_utf16_lossy(std::slice::from_raw_parts(
                     name,

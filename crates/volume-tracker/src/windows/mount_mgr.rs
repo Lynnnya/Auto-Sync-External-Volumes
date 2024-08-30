@@ -1,9 +1,10 @@
+use crate::mem::AlignedBuffer;
+
 use super::{DropHandle, Error, ULONG, USHORT};
-use std::ffi::c_void;
 use windows::{
     core::w,
     Win32::{
-        Foundation::*,
+        Foundation::{ERROR_MORE_DATA, HANDLE, MAX_PATH},
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS,
         },
@@ -55,7 +56,7 @@ impl MountMgr {
                         HANDLE(std::ptr::null_mut()),
                     )
                 }
-                .map_err(Error::Win32Error)?,
+                .map_err(|e| Error::Win32Error("CreateFileW", e))?,
             ),
         })
     }
@@ -65,45 +66,50 @@ impl MountMgr {
 
         unsafe {
             let mut attempt = 0;
-            let mut buf =
-                vec![0u8; std::mem::size_of::<MOUNTMGR_MOUNT_POINT>() + volume_name.len() * 2];
+            let mut buf = AlignedBuffer::new(
+                std::mem::size_of::<MOUNTMGR_MOUNT_POINT>() + volume_name.len() * 2,
+                std::mem::align_of::<MOUNTMGR_MOUNT_POINT>(),
+            )
+            .ok_or(Error::AllocFailed)?;
 
+            #[allow(clippy::cast_possible_truncation)]
             let input = MOUNTMGR_MOUNT_POINT {
-                device_name_offset: std::mem::size_of::<MOUNTMGR_MOUNT_POINT>() as _,
-                device_name_length: volume_name.len() as u16 * 2,
+                device_name_length: (volume_name.len() * 2)
+                    .try_into()
+                    .map_err(|_| Error::Overflow)?,
                 ..Default::default()
             };
 
-            std::ptr::copy_nonoverlapping(
-                &input as *const _ as *const u8,
-                buf.as_mut_ptr(),
-                std::mem::size_of::<MOUNTMGR_MOUNT_POINT>(),
-            );
+            let input_ptr = buf.write_aligned(&input, 1).ok_or(Error::Overflow)?;
 
-            std::ptr::copy_nonoverlapping(
-                volume_name.as_ptr(),
-                buf.as_mut_ptr()
-                    .byte_add(std::mem::size_of::<MOUNTMGR_MOUNT_POINT>())
-                    as *mut u16,
-                volume_name.len(),
-            );
+            let volume_name_ptr = buf
+                .write_aligned(std::ptr::from_ref(&volume_name), volume_name.len())
+                .ok_or(Error::Overflow)?;
 
-            let mut out_buf_size = std::mem::size_of::<MOUNTMGR_MOUNT_POINTS>() as u32 + MAX_PATH;
+            (*input_ptr).device_name_offset = volume_name_ptr
+                .byte_offset_from(input_ptr)
+                .try_into()
+                .map_err(|_| Error::Overflow)?;
+
+            let mut out_buf_size = std::mem::size_of::<MOUNTMGR_MOUNT_POINTS>() + MAX_PATH as usize;
 
             while attempt < 5 {
                 attempt += 1;
 
-                let mut out_buf = vec![0u8; out_buf_size as usize];
-
                 let mut returned = 0u32;
 
+                let out_buf =
+                    AlignedBuffer::new(out_buf_size, std::mem::align_of::<MOUNTMGR_MOUNT_POINTS>())
+                        .ok_or(Error::AllocFailed)?;
+
+                #[allow(clippy::cast_possible_truncation)]
                 let ret = DeviceIoControl(
                     self.handle.0,
                     IOCTL_MOUNTMGR_QUERY_POINTS,
-                    Some(buf.as_ptr() as *mut c_void),
-                    buf.len() as u32,
-                    Some(out_buf.as_mut_ptr() as *mut c_void),
-                    out_buf_size,
+                    Some(buf.as_mut_ptr().cast()),
+                    buf.byte_len() as u32,
+                    Some(out_buf.as_mut_ptr().cast()),
+                    out_buf.byte_len() as u32,
                     Some(&mut returned),
                     None,
                 );
@@ -115,18 +121,30 @@ impl MountMgr {
                     return Err(Error::Win32ErrorOnIoctl("IOCTL_MOUNTMGR_QUERY_POINTS", e));
                 }
 
-                let out_ptr = &*(out_buf.as_ptr() as *const MOUNTMGR_MOUNT_POINTS);
+                #[allow(clippy::cast_ptr_alignment, clippy::expect_used)]
+                let out_ptr = out_buf
+                    .cast::<MOUNTMGR_MOUNT_POINTS>()
+                    .as_ref()
+                    .expect("out_buf is null");
 
                 for i in 0..out_ptr.number_of_mount_points {
-                    let point = &*out_ptr.points.as_ptr().add(i as usize);
+                    #[allow(clippy::expect_used)]
+                    let point = out_ptr
+                        .points
+                        .as_ptr()
+                        .add(i as usize)
+                        .cast::<MOUNTMGR_MOUNT_POINT>()
+                        .as_ref()
+                        .expect("point is null");
                     if point.symbolic_link_name_offset == 0 {
                         continue;
                     }
+                    #[allow(clippy::cast_ptr_alignment)]
                     let name = std::slice::from_raw_parts(
                         out_buf
                             .as_ptr()
                             .add(point.symbolic_link_name_offset as usize)
-                            as *const u16,
+                            .cast::<u16>(),
                         point.symbolic_link_name_length as usize / 2,
                     );
                     names.push(String::from_utf16_lossy(name));

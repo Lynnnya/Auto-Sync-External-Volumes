@@ -32,6 +32,7 @@ impl<'a> Iterator for PzzWSTRIter<'a> {
                 end_ptr = end_ptr.add(1);
             }
 
+            #[allow(clippy::cast_sign_loss)]
             let slice =
                 std::slice::from_raw_parts(self.ptr, end_ptr.offset_from(self.ptr) as usize);
             self.ptr = end_ptr.add(1);

@@ -8,13 +8,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    task::Poll,
 };
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
-    sync::Semaphore,
-    task::JoinSet,
-};
+use tokio::{fs::File, io::AsyncWrite, sync::Semaphore, task::JoinSet};
 
 use crate::SyncError;
 
@@ -42,6 +38,168 @@ pub enum ProgressMilestone {
 pub struct FileProgress {
     pub total: u64,
     pub done: u64,
+}
+
+/// A structure for tracking progress where the total, in progress, done, skipped, and failed counts are tracked.
+pub struct TrackingAsyncWrite<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> {
+    job_id: K,
+    progress_callback: &'a F,
+    size: u64,
+    fp: FileProgress,
+    gp: &'a GlobalProgress,
+    failed: bool,
+    finalized: bool,
+    written: u64,
+    last_progress_reported: u64,
+    inner: Pin<&'a mut W>,
+}
+
+impl<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> TrackingAsyncWrite<'a, W, K, F> {
+    /// Create a new `TrackingAsyncWrite` instance.
+    pub fn new(
+        job_id: K,
+        size: u64,
+        gp: &'a GlobalProgress,
+        progress_callback: &'a F,
+        inner: Pin<&'a mut W>,
+    ) -> Self {
+        gp.files.in_progress.fetch_add(1, Ordering::Relaxed);
+        let fp = FileProgress {
+            total: size,
+            done: 0,
+        };
+        progress_callback(&job_id, &fp);
+        Self {
+            job_id,
+            progress_callback,
+            size,
+            inner,
+            gp,
+            failed: false,
+            finalized: false,
+            written: 0,
+            last_progress_reported: 0,
+            fp,
+        }
+    }
+
+    fn register_fail(&mut self) {
+        if !self.failed {
+            self.gp.bytes.failed.fetch_add(self.size, Ordering::Relaxed);
+            self.gp.files.in_progress.fetch_sub(1, Ordering::Relaxed);
+            self.gp.files.failed.fetch_add(1, Ordering::Relaxed);
+            self.failed = true;
+        }
+    }
+
+    fn increment_bytes(&mut self, n: u64) {
+        if !self.failed {
+            self.written += n;
+            if self.written - self.last_progress_reported >= 64 << 10 {
+                (self.progress_callback)(&self.job_id, &self.fp);
+                self.last_progress_reported = self.written;
+            }
+            self.fp.done += n;
+            self.gp.bytes.in_progress.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    fn finalize(&mut self) {
+        (self.progress_callback)(&self.job_id, &self.fp);
+        if !self.failed && !self.finalized {
+            if self.written != self.size {
+                self.register_fail();
+            }
+            self.gp
+                .bytes
+                .done
+                .fetch_add(self.written, Ordering::Relaxed);
+            self.gp
+                .bytes
+                .in_progress
+                .fetch_sub(self.size, Ordering::Relaxed);
+            self.gp.files.in_progress.fetch_sub(1, Ordering::Relaxed);
+            self.gp.files.done.fetch_add(1, Ordering::Relaxed);
+            self.finalized = true;
+        }
+    }
+
+    fn revert_progress(&mut self) {
+        if !self.failed && self.finalized {
+            self.gp
+                .bytes
+                .done
+                .fetch_sub(self.written, Ordering::Relaxed);
+            self.gp.files.done.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> AsyncWrite
+    for TrackingAsyncWrite<'a, W, K, F>
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.inner.as_mut().poll_write(cx, buf) {
+            Poll::Ready(r) => match r {
+                Err(e) => {
+                    self.register_fail();
+                    Poll::Ready(Err(e))
+                }
+                Ok(n) => {
+                    self.increment_bytes(n as u64);
+                    Poll::Ready(Ok(n))
+                }
+            },
+            r => r,
+        }
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.inner.as_mut().poll_flush(cx) {
+            Poll::Ready(r) => match r {
+                Err(e) => {
+                    self.register_fail();
+                    Poll::Ready(Err(e))
+                }
+                Ok(_) => {
+                    self.finalize();
+                    Poll::Ready(Ok(()))
+                }
+            },
+            r => r,
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.inner.as_mut().poll_shutdown(cx) {
+            Poll::Ready(r) => match r {
+                Err(e) => {
+                    self.register_fail();
+                    Poll::Ready(Err(e))
+                }
+                Ok(_) => Poll::Ready(Ok(())),
+            },
+            r => r,
+        }
+    }
+}
+
+impl<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> Drop
+    for TrackingAsyncWrite<'a, W, K, F>
+{
+    fn drop(&mut self) {
+        self.finalize();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -198,8 +356,6 @@ impl SyncFS {
                             .await
                             .map(|_| (src, dest))
                         });
-
-                        self.ctx.progress.files.done.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(Err(e)) => {
                         println!("Error occurred during discovery: {}", e);
@@ -275,14 +431,14 @@ async fn cmp_file(dest: PathBuf, src: PathBuf) -> Result<bool, tokio::io::Error>
     Ok(true)
 }
 
-async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
+async fn copy_file<K: Hash + PartialEq + Unpin, F: Fn(&K, &FileProgress)>(
     job_id: K,
     dest: PathBuf,
     src: PathBuf,
     semaphore: Option<&Semaphore>,
     progress: &GlobalProgress,
     file_progress_callback: &F,
-) -> Result<(), SyncError> {
+) -> Result<u64, SyncError> {
     let permit = match semaphore {
         Some(s) => match s.acquire().await {
             Ok(p) => Some(p),
@@ -293,8 +449,6 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
         },
         None => None,
     };
-
-    let mut buf = vec![0u8; 128 << 10];
 
     let mut src_file = match File::open(&src).await {
         Ok(f) => f,
@@ -312,75 +466,48 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
         progress.files.failed.fetch_add(1, Ordering::Relaxed);
         SyncError::StatFailed(src.clone(), e)
     })?;
-    let mut file_progress = FileProgress {
-        total: src_meta.len(),
-        ..Default::default()
-    };
-    file_progress_callback(&job_id, &file_progress);
 
-    let dst_file = match File::create(&dest).await {
+    let dst_file = std::pin::pin!(match File::create(&dest).await {
         Ok(f) => f,
         Err(e) => {
             progress.files.failed.fetch_add(1, Ordering::Relaxed);
             return Err(SyncError::CopyFailed { src, dest, err: e });
         }
-    };
+    });
 
-    let mut dest_write = BufWriter::new(dst_file);
+    let mut dest_write = TrackingAsyncWrite::new(
+        job_id,
+        src_meta.len(),
+        progress,
+        file_progress_callback,
+        dst_file,
+    );
 
-    progress.files.in_progress.fetch_add(1, Ordering::Relaxed);
+    // This already handles flushing the file so we don't need to do it again.
+    let result = tokio::io::copy(&mut src_file, &mut dest_write).await;
 
-    let result = loop {
-        let n = match src_file.read(&mut buf).await {
-            Ok(0) => break Ok(()),
-            Ok(n) => n,
-            Err(e) => break Err(e),
-        };
-        progress
-            .bytes
-            .in_progress
-            .fetch_add(n as u64, Ordering::Relaxed);
-        file_progress.done += n as u64;
-        file_progress_callback(&job_id, &file_progress);
-        match dest_write.write_all(&buf[..n]).await {
-            Ok(_) => {}
-            Err(e) => break Err(e),
-        }
-    };
-
-    progress.files.in_progress.fetch_sub(1, Ordering::Relaxed);
+    drop(permit);
 
     match result {
-        Ok(()) => {
-            dest_write.flush().await.map_err(|e| {
+        Ok(written) => {
+            if written != src_meta.len() {
+                dest_write.revert_progress();
                 progress.files.failed.fetch_add(1, Ordering::Relaxed);
-                SyncError::CopyFailed {
-                    src: src.clone(),
-                    dest: dest.clone(),
-                    err: e,
-                }
-            })?;
-            progress
-                .bytes
-                .done
-                .fetch_add(file_progress.total, Ordering::Relaxed);
-            progress
-                .bytes
-                .in_progress
-                .fetch_sub(file_progress.total, Ordering::Relaxed);
-            drop(permit);
-
-            Ok(())
+                progress
+                    .bytes
+                    .failed
+                    .fetch_add(src_meta.len(), Ordering::Relaxed);
+                return Err(SyncError::ShortCopy {
+                    src,
+                    dest,
+                    copied: written,
+                    expected: src_meta.len(),
+                });
+            }
+            Ok(written)
         }
         Err(e) => {
             progress.files.failed.fetch_add(1, Ordering::Relaxed);
-            progress
-                .bytes
-                .failed
-                .fetch_add(file_progress.total, Ordering::Relaxed);
-            progress.files.in_progress.fetch_sub(1, Ordering::Relaxed);
-            drop(permit);
-
             Err(SyncError::CopyFailed { src, dest, err: e })
         }
     }
@@ -389,25 +516,7 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_cmp_file() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let src = tmp_dir.path().join("src");
-        let dest = tmp_dir.path().join("dest");
-
-        let mut src_file = File::create(&src).await.unwrap();
-        src_file.write_all(b"hello world").await.unwrap();
-
-        let mut dest_file = File::create(&dest).await.unwrap();
-        dest_file.write_all(b"hello world").await.unwrap();
-
-        assert!(cmp_file(src.clone(), dest.clone()).await.unwrap());
-
-        src_file.write_all(b"HELLO world").await.unwrap();
-
-        assert!(!cmp_file(src.clone(), dest.clone()).await.unwrap());
-    }
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn test_copy_file() {

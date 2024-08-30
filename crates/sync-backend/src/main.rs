@@ -1,6 +1,4 @@
-use std::sync::Mutex;
-
-use tokio::task::JoinSet;
+use tokio::{sync::Mutex, task::JoinSet};
 use volume_tracker::{
     platform_init, Device, FileSystem, NotificationSource, PlatformNotifier, SpawnerDisposition,
 };
@@ -21,7 +19,7 @@ fn main() {
     let js = Mutex::new(JoinSet::new());
 
     let mut s = PlatformNotifier::new(|v, d, p| {
-        let ah = js.lock().unwrap().spawn_on(
+        let ah = js.blocking_lock().spawn_on(
             async move {
                 log::info!(
                     "New sync task: volume: {}, device: {}, mounted: {:?}",
@@ -43,7 +41,7 @@ fn main() {
 
     let wait_tasks = async {
         loop {
-            let res = js.lock().unwrap().join_next().await;
+            let res = js.lock().await.join_next().await;
             match res {
                 None => {
                     break;

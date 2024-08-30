@@ -26,6 +26,15 @@ pub enum SyncError {
         #[source]
         err: tokio::io::Error,
     },
+    #[error("Short copy from {src} to {dest}, copied {copied} bytes, expected {expected}")]
+    /// A copy operation was short, maybe a file was modified during the copy or a file system error
+    #[allow(missing_docs)]
+    ShortCopy {
+        src: PathBuf,
+        dest: PathBuf,
+        copied: u64,
+        expected: u64,
+    },
     #[error("An unknown error occurred in a task, this is likely a bug: {0}")]
     /// A panic likely occurred in a task.
     JoinError(#[from] tokio::task::JoinError),
