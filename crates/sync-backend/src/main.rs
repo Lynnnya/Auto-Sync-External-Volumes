@@ -17,7 +17,7 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
-    let handle = rt.handle().clone();
+    let handle = rt.handle();
     let jh = Arc::new(Mutex::new(JoinSet::new()));
     let jh2 = jh.clone();
 
@@ -31,7 +31,7 @@ fn main() {
                     p
                 );
             },
-            &handle,
+            handle,
         );
         SpawnerDisposition::Spawned(ah)
     })

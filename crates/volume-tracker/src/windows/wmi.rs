@@ -1,14 +1,16 @@
+use std::marker::PhantomData;
+
 use windows::{
     core::*,
     Win32::System::{Com::*, Rpc::*, Wmi::*},
 };
 
 #[implement(IWbemObjectSink)]
-struct Notifier {
-    callback: Box<dyn Fn() + Send + Sync>,
+struct Notifier<'a> {
+    callback: Box<dyn Fn() + Send + Sync + 'a>,
 }
 
-impl IWbemObjectSink_Impl for Notifier_Impl {
+impl IWbemObjectSink_Impl for Notifier_Impl<'_> {
     fn Indicate(
         &self,
         lobjectcount: i32,
@@ -60,14 +62,15 @@ pub(crate) fn init_com() -> Result<()> {
     Ok(())
 }
 
-pub struct WmiObserver {
+pub struct WmiObserver<'cb> {
     iwbem_services: IWbemServices,
     _apartment: IUnsecuredApartment,
     sink: IWbemObjectSink,
+    _marker: PhantomData<&'cb ()>,
 }
 
-impl WmiObserver {
-    pub fn new(callback: Box<dyn Fn() + Send + Sync>) -> Result<Self> {
+impl<'cb> WmiObserver<'cb> {
+    pub fn new(callback: Box<dyn Fn() + Send + Sync + 'cb>) -> Result<Self> {
         unsafe {
             let iwbem_locator: IWbemLocator =
                 CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
@@ -115,12 +118,13 @@ impl WmiObserver {
                 iwbem_services,
                 _apartment: apartment,
                 sink: notifier,
+                _marker: PhantomData,
             })
         }
     }
 }
 
-impl Drop for WmiObserver {
+impl Drop for WmiObserver<'_> {
     fn drop(&mut self) {
         unsafe {
             self.iwbem_services.CancelAsyncCall(&self.sink).ok();

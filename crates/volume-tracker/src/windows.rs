@@ -2,6 +2,7 @@ use std::{
     ffi::{c_ulong, c_ushort, c_void},
     fmt::{Debug, Display},
     hash::Hash,
+    marker::PhantomData,
     ops::{Deref, DerefMut},
     path::PathBuf,
     pin::Pin,
@@ -233,16 +234,14 @@ unsafe impl<T> Sync for UnsafeSync<T> {}
 
 /// A file system notification source for Windows using the Plug and Play manager.
 pub struct HcmNotifier<
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
-        + Send
-        + Sync
-        + Clone
-        + 'static,
+    'a,
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + Clone + 'a,
 > {
     handle: Option<UnsafeSync<HCMNOTIFICATION>>,
     ctx: Pin<Box<Context>>,
     spawner: Arc<F>,
-    _wmi: WmiObserver,
+    _wmi: WmiObserver<'a>,
+    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
 struct Context {
@@ -252,12 +251,13 @@ struct Context {
 }
 
 impl<
+        'a,
         F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
             + Send
             + Sync
             + Clone
-            + 'static,
-    > NotificationSource<F> for HcmNotifier<F>
+            + 'a,
+    > NotificationSource<'a, F> for HcmNotifier<'a, F>
 {
     type FileSystem = VolumeName;
     type Device = DeviceName;
@@ -312,6 +312,7 @@ impl<
             }),
             spawner: callback,
             _wmi: WmiObserver::new(inner_cb)?,
+            _phantom: PhantomData,
         })
     }
 
@@ -450,13 +451,9 @@ impl<
     }
 }
 
-impl<F> Drop for HcmNotifier<F>
+impl<'a, F> Drop for HcmNotifier<'a, F>
 where
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
-        + Send
-        + Sync
-        + Clone
-        + 'static,
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + Clone + 'a,
 {
     fn drop(&mut self) {
         if let Err(e) = self.pause() {

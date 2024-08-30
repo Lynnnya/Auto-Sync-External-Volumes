@@ -125,12 +125,12 @@ pub enum SpawnerDisposition {
 /// optionally spawning a task to handle the file system.
 /// The returned [`tokio::task::AbortHandle`] will be registered
 /// and can be used to abort the task when the file system is removed.
-pub trait NotificationSource<F>: Sized
+pub trait NotificationSource<'a, F>: Sized
 where
     F: Fn(Self::FileSystem, Self::Device, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Clone
-        + 'static,
+        + 'a,
 {
     /// The file system type, usually a volume identifier.
     type FileSystem: FileSystem;
@@ -158,12 +158,12 @@ where
 /// A dummy [`NotificationSource`] that does nothing on unimplemented platforms.
 pub struct UnimplementedNotifier<F>(PhantomData<F>);
 
-impl<F> NotificationSource<F> for UnimplementedNotifier<F>
+impl<'a, F> NotificationSource<'a, F> for UnimplementedNotifier<F>
 where
     F: Fn(UnimplementedFileSystem, UnimplementedDevice, Option<PathBuf>) -> SpawnerDisposition
         + Send
         + Clone
-        + 'static,
+        + 'a,
 {
     type FileSystem = UnimplementedFileSystem;
     type Device = UnimplementedDevice;
@@ -196,11 +196,11 @@ where
 
 #[cfg(windows)]
 /// A platform specific [`NotificationSource`].
-pub type PlatformNotifier<F> = windows::HcmNotifier<F>;
+pub type PlatformNotifier<'a, F> = windows::HcmNotifier<'a, F>;
 
 #[cfg(not(windows))]
 /// A platform specific [`NotificationSource`].
-pub type PlatformNotifier<F> = UnimplementedNotifier<F>;
+pub type PlatformNotifier<'a, F> = UnimplementedNotifier<'a, F>;
 
 /// Initialize the platform specific components.
 pub fn platform_init() -> Result<(), Box<dyn std::error::Error>> {
