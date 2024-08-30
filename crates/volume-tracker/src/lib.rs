@@ -156,9 +156,9 @@ where
 }
 
 /// A dummy [`NotificationSource`] that does nothing on unimplemented platforms.
-pub struct UnimplementedNotifier<F>(PhantomData<F>);
+pub struct UnimplementedNotifier<'a, F>(PhantomData<&'a F>);
 
-impl<'a, F> NotificationSource<'a, F> for UnimplementedNotifier<F>
+impl<'a, F> NotificationSource<'a, F> for UnimplementedNotifier<'a, F>
 where
     F: Fn(UnimplementedFileSystem, UnimplementedDevice, Option<PathBuf>) -> SpawnerDisposition
         + Send
@@ -170,27 +170,30 @@ where
     type Error = &'static str;
 
     fn new(_: F) -> Result<Self, Self::Error> {
-        Err("Unimplemented")
+        Ok(Self(PhantomData))
     }
 
     fn list(&self) -> Result<Vec<(Self::FileSystem, Self::Device, Option<PathBuf>)>, Self::Error> {
-        Err("Unimplemented")
+        log::warn!("Platform not supported, no notifications will be received");
+        Ok(vec![])
     }
 
     fn list_spawn(&self) -> Result<(), Self::Error> {
-        Err("Unimplemented")
+        log::warn!("Platform not supported, no notifications will be received");
+        Ok(())
     }
 
     fn start(&mut self) -> Result<(), Self::Error> {
-        Err("Unimplemented")
+        log::warn!("Platform not supported, no notifications will be received");
+        Ok(())
     }
 
     fn pause(&mut self) -> Result<(), Self::Error> {
-        Err("Unimplemented")
+        Ok(())
     }
 
     fn reset(&mut self) -> Result<(), Self::Error> {
-        Err("Unimplemented")
+        Ok(())
     }
 }
 
