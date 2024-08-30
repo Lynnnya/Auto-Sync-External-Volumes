@@ -62,8 +62,7 @@ pub struct SyncFS {
     ctx: Arc<SyncFSCtx>,
 }
 
-/// A structure for holding the synchronization context.
-pub struct SyncFSCtx {
+struct SyncFSCtx {
     progress: GlobalProgress,
     semaphore: Semaphore,
 }
