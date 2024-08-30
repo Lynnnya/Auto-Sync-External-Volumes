@@ -21,9 +21,10 @@ use crate::SyncError;
 #[non_exhaustive]
 #[derive(Debug, Default)]
 /// Global progress tracking.
+#[allow(missing_docs)]
 pub struct GlobalProgress {
-    files: ProgressTIDSF<AtomicU64>,
-    bytes: ProgressTIDSF<AtomicU64>,
+    pub files: ProgressTIDSF<AtomicU64>,
+    pub bytes: ProgressTIDSF<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,19 +38,21 @@ pub enum ProgressMilestone {
 
 #[derive(Debug, Default, Clone, Copy)]
 /// Progress tracking for a single file.
+#[allow(missing_docs)]
 pub struct FileProgress {
-    total: u64,
-    done: u64,
+    pub total: u64,
+    pub done: u64,
 }
 
 #[derive(Debug, Default)]
 /// A structure for tracking progress where the total, in progress, done, skipped, and failed counts are tracked.
+#[allow(missing_docs)]
 pub struct ProgressTIDSF<T: Default> {
-    total: T,
-    in_progress: T,
-    done: T,
-    skipped: T,
-    failed: T,
+    pub total: T,
+    pub in_progress: T,
+    pub done: T,
+    pub skipped: T,
+    pub failed: T,
 }
 
 /// A structure for synchronizing two directories.
