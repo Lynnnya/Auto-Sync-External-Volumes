@@ -69,9 +69,10 @@ impl Device for UnimplementedDevice {
     }
 }
 
-#[derive(Debug)]
 /// A holder for [`AbortHandle`]s, used to cancel tasks whose file systems have been removed.
-pub struct AbortHandleHolder<K: Hash + Eq + Display>(DashMap<K, AbortHandle>);
+pub struct AbortHandleHolder<K: Hash + Eq + Display>(
+    DashMap<K, (AbortHandle, Option<Box<dyn FnOnce() + Send + Sync>>)>,
+);
 
 impl<K: Hash + Eq + Display> Default for AbortHandleHolder<K> {
     fn default() -> Self {
@@ -81,17 +82,25 @@ impl<K: Hash + Eq + Display> Default for AbortHandleHolder<K> {
 
 #[allow(dead_code)]
 impl<K: Hash + Eq + Display> AbortHandleHolder<K> {
-    pub(crate) fn insert(&self, key: K, handle: AbortHandle) {
-        self.0.insert(key, handle);
+    pub(crate) fn insert(
+        &self,
+        key: K,
+        handle: AbortHandle,
+        on_remove: Option<Box<dyn FnOnce() + Send + Sync>>,
+    ) {
+        self.0.insert(key, (handle, on_remove));
     }
 
     pub(crate) fn gc(&self) {
-        self.0.retain(|_, v| !v.is_finished());
+        self.0.retain(|_, v| !v.0.is_finished());
     }
 
     pub(crate) fn remove_abort(&self, key: &K) -> Option<K> {
-        if let Some((k, handle)) = self.0.remove(key) {
-            handle.abort();
+        if let Some((k, (abort, cleanup))) = self.0.remove(key) {
+            abort.abort();
+            if let Some(cleanup) = cleanup {
+                cleanup();
+            }
             Some(k)
         } else {
             None
@@ -100,11 +109,15 @@ impl<K: Hash + Eq + Display> AbortHandleHolder<K> {
 
     /// Clear all [`AbortHandle`]s and abort the associated tasks.
     pub fn clear_abort(&self) {
-        self.0.iter().for_each(|rec| {
-            if !rec.value().is_finished() {
-                log::info!("Aborting task for volume: {}", rec.key());
+        self.0.iter_mut().for_each(|mut rec| {
+            let (key, (abort, cleanup)) = rec.pair_mut();
+            if !abort.is_finished() {
+                log::info!("Aborting task for volume: {}", key);
+                abort.abort();
+                if let Some(cleanup) = cleanup.take() {
+                    cleanup();
+                }
             }
-            rec.value().abort();
         });
 
         self.0.clear();
@@ -120,7 +133,7 @@ impl<K: Hash + Eq + Display> Drop for AbortHandleHolder<K> {
 /// The disposition of a spawner callback.
 pub enum SpawnerDisposition {
     /// A task has been spawned to handle the file system.
-    Spawned(AbortHandle),
+    Spawned(AbortHandle, Option<Box<dyn FnOnce() + Send + Sync>>),
     /// The file system should be ignored.
     Ignore,
     /// The file system should be skipped but next time a file system change is detected, the callback should be called again.

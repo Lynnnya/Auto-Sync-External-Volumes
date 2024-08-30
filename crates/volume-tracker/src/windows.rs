@@ -303,8 +303,8 @@ impl<
                 };
 
                 match callback_clone(mp.clone(), d.clone(), dos_paths) {
-                    SpawnerDisposition::Spawned(handle) => {
-                        aborter_clone.insert(mp.clone(), handle);
+                    SpawnerDisposition::Spawned(handle, cleanup) => {
+                        aborter_clone.insert(mp.clone(), handle, cleanup);
                         false
                     }
                     SpawnerDisposition::Ignore => false,
@@ -394,10 +394,10 @@ impl<
         self.ctx.aborter.clear_abort();
         let list = self.list()?;
         for (mp, d, dos_paths) in list {
-            if let SpawnerDisposition::Spawned(handle) =
+            if let SpawnerDisposition::Spawned(handle, cleanup) =
                 (self.spawner)(mp.clone(), d.clone(), dos_paths)
             {
-                self.ctx.aborter.insert(mp, handle);
+                self.ctx.aborter.insert(mp, handle, cleanup);
             }
         }
 

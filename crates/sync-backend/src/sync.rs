@@ -168,10 +168,7 @@ impl<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> AsyncWrite
                     self.register_fail();
                     Poll::Ready(Err(e))
                 }
-                Ok(_) => {
-                    self.finalize();
-                    Poll::Ready(Ok(()))
-                }
+                Ok(_) => Poll::Ready(Ok(())),
             },
             r => r,
         }
@@ -187,7 +184,10 @@ impl<'a, W: AsyncWrite, K: Unpin, F: Fn(&K, &FileProgress)> AsyncWrite
                     self.register_fail();
                     Poll::Ready(Err(e))
                 }
-                Ok(_) => Poll::Ready(Ok(())),
+                Ok(_) => {
+                    self.finalize();
+                    Poll::Ready(Ok(()))
+                }
             },
             r => r,
         }
@@ -214,9 +214,9 @@ pub struct ProgressTIDSF<T: Default> {
 }
 
 /// A structure for synchronizing two directories.
-pub struct SyncFS {
-    src_root: PathBuf,
-    dest_root: PathBuf,
+pub struct SyncFS<'a> {
+    src_root: &'a PathBuf,
+    dest_root: &'a PathBuf,
     ctx: Arc<SyncFSCtx>,
 }
 
@@ -225,9 +225,15 @@ struct SyncFSCtx {
     semaphore: Semaphore,
 }
 
-impl SyncFS {
+impl<'a> SyncFS<'a> {
     /// Create a new `SyncFS` instance.
-    pub fn new(src_root: PathBuf, dest_root: PathBuf, max_concurrent: usize) -> Self {
+    pub fn new(src_root: &'a PathBuf, dest_root: &'a PathBuf, max_concurrent: usize) -> Self {
+        log::info!(
+            "Creating SyncFS instance from {} to {}, concurrency: {}",
+            src_root.display(),
+            dest_root.display(),
+            max_concurrent
+        );
         Self {
             ctx: Arc::new(SyncFSCtx {
                 progress: GlobalProgress::default(),
@@ -237,7 +243,7 @@ impl SyncFS {
             dest_root,
         }
     }
-    fn walk<'a>(
+    fn walk(
         &'a self,
         rel: PathBuf,
         tx: &'a flume::Sender<Result<(PathBuf, PathBuf), SyncError>>,
@@ -565,7 +571,7 @@ mod tests {
             .await
             .unwrap();
 
-        let sync = SyncFS::new(src.clone(), dest.clone(), 1);
+        let sync = SyncFS::new(&src, &dest, 1);
 
         let done = AtomicU64::new(0);
 

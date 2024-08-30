@@ -1,0 +1,8 @@
+pairs:
+  - src:
+      match:
+        volume: \\?\Volume{b1b3b1b3-0000-0000-0000-100000000000}
+      path: DCIM
+    dest:
+      path: D:\DCIM
+    concurrency: 10
