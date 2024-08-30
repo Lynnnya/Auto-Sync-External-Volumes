@@ -235,7 +235,7 @@ unsafe impl<T> Sync for UnsafeSync<T> {}
 /// A file system notification source for Windows using the Plug and Play manager.
 pub struct HcmNotifier<
     'a,
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + Clone + 'a,
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + 'a,
 > {
     handle: Option<UnsafeSync<HCMNOTIFICATION>>,
     ctx: Pin<Box<Context>>,
@@ -252,11 +252,7 @@ struct Context {
 
 impl<
         'a,
-        F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition
-            + Send
-            + Sync
-            + Clone
-            + 'a,
+        F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + 'a,
     > NotificationSource<'a, F> for HcmNotifier<'a, F>
 {
     type FileSystem = VolumeName;
@@ -453,7 +449,7 @@ impl<
 
 impl<'a, F> Drop for HcmNotifier<'a, F>
 where
-    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + Clone + 'a,
+    F: Fn(VolumeName, DeviceName, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + 'a,
 {
     fn drop(&mut self) {
         if let Err(e) = self.pause() {

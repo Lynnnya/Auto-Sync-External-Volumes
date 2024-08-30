@@ -79,11 +79,11 @@ impl SyncFS {
             dest_root,
         }
     }
-    fn walk<'a, 'b: 'a>(
+    fn walk<'a>(
         &'a self,
         rel: PathBuf,
-        tx: &'b flume::Sender<Result<(PathBuf, PathBuf), SyncError>>,
-    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+        tx: &'a flume::Sender<Result<(PathBuf, PathBuf), SyncError>>,
+    ) -> Pin<Box<impl Future<Output = ()> + 'a>> {
         Box::pin(async move {
             let src = self.src_root.join(&rel);
             let dest = self.dest_root.join(&rel);

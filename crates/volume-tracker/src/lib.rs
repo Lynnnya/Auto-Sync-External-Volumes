@@ -127,10 +127,7 @@ pub enum SpawnerDisposition {
 /// and can be used to abort the task when the file system is removed.
 pub trait NotificationSource<'a, F>: Sized
 where
-    F: Fn(Self::FileSystem, Self::Device, Option<PathBuf>) -> SpawnerDisposition
-        + Send
-        + Clone
-        + 'a,
+    F: Fn(Self::FileSystem, Self::Device, Option<PathBuf>) -> SpawnerDisposition + Send + Sync + 'a,
 {
     /// The file system type, usually a volume identifier.
     type FileSystem: FileSystem;
@@ -162,7 +159,7 @@ impl<'a, F> NotificationSource<'a, F> for UnimplementedNotifier<'a, F>
 where
     F: Fn(UnimplementedFileSystem, UnimplementedDevice, Option<PathBuf>) -> SpawnerDisposition
         + Send
-        + Clone
+        + Sync
         + 'a,
 {
     type FileSystem = UnimplementedFileSystem;

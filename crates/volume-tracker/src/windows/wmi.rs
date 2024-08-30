@@ -6,11 +6,24 @@ use windows::{
 };
 
 #[implement(IWbemObjectSink)]
-struct Notifier<'a> {
-    callback: Box<dyn Fn() + Send + Sync + 'a>,
+struct Notifier<'a, F>
+where
+    F: Fn() + Send + Sync + 'a,
+{
+    callback: F,
+    _marker: PhantomData<&'a ()>,
 }
 
-impl IWbemObjectSink_Impl for Notifier_Impl<'_> {
+impl<'a, F: Fn() + Send + Sync> Notifier<'a, F> {
+    pub fn new(callback: F) -> Self {
+        Self {
+            callback,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F: Fn() + Send + Sync> IWbemObjectSink_Impl for Notifier_Impl<'_, F> {
     fn Indicate(
         &self,
         lobjectcount: i32,
@@ -70,7 +83,7 @@ pub struct WmiObserver<'cb> {
 }
 
 impl<'cb> WmiObserver<'cb> {
-    pub fn new(callback: Box<dyn Fn() + Send + Sync + 'cb>) -> Result<Self> {
+    pub fn new<F: Fn() + Send + Sync + 'cb>(callback: F) -> Result<Self> {
         unsafe {
             let iwbem_locator: IWbemLocator =
                 CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
@@ -100,7 +113,7 @@ impl<'cb> WmiObserver<'cb> {
             let apartment: IUnsecuredApartment =
                 CoCreateInstance(&UnsecuredApartment, None, CLSCTX_LOCAL_SERVER)?;
 
-            let notifier: IWbemObjectSink = Notifier { callback }.into();
+            let notifier: IWbemObjectSink = Notifier::new(callback).into();
 
             let notifier: IWbemObjectSink = apartment
                 .CreateObjectStub(&notifier.cast::<IUnknown>()?)?
