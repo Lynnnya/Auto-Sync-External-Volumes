@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use tokio::task::JoinSet;
 use volume_tracker::{
@@ -18,11 +18,10 @@ fn main() {
         .build()
         .unwrap();
     let handle = rt.handle();
-    let jh = Arc::new(Mutex::new(JoinSet::new()));
-    let jh2 = jh.clone();
+    let js = Mutex::new(JoinSet::new());
 
-    let mut s = PlatformNotifier::new(move |v, d, p| {
-        let ah = jh.lock().unwrap().spawn_on(
+    let mut s = PlatformNotifier::new(|v, d, p| {
+        let ah = js.lock().unwrap().spawn_on(
             async move {
                 log::info!(
                     "New sync task: volume: {}, device: {}, mounted: {:?}",
@@ -42,6 +41,25 @@ fn main() {
 
     log::info!("Successfully set up watcher!");
 
+    let wait_tasks = async {
+        loop {
+            let res = js.lock().unwrap().join_next().await;
+            match res {
+                None => {
+                    break;
+                }
+                Some(Err(e)) => {
+                    if e.is_cancelled() {
+                        log::warn!("Task cancelled");
+                    } else {
+                        log::error!("Task failed: {:?}", e);
+                    }
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+    };
+
     rt.block_on(async {
         log::info!("Press ctrl-c to exit");
         tokio::signal::ctrl_c()
@@ -49,29 +67,12 @@ fn main() {
             .expect("Failed to wait for ctrl-c");
         log::info!("Received ctrl-c, shutting down, press ctrl-c again to abort");
         s.pause().unwrap();
-        loop {
-            let mut jh2 = jh2.lock().unwrap();
-            tokio::select! {
-                res = jh2.join_next() => {
-                    match res {
-                        None => {
-                            log::info!("All tasks completed, shutting down");
-                            break;
-                        }
-                        Some(Err(e)) => {
-                            if e.is_cancelled() {
-                                log::warn!("Task cancelled");
-                            } else {
-                                log::error!("Task failed: {:?}", e);
-                            }
-                        }
-                        Some(Ok(_)) => {}
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    log::warn!("Received ctrl-c again, aborting");
-                    break;
-                }
+        tokio::select! {
+            _ = wait_tasks => {
+                log::info!("All tasks completed, shutting down");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                log::warn!("Received ctrl-c again, aborting");
             }
         }
     });
