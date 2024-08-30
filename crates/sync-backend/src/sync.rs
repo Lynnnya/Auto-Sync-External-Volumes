@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     sync::Semaphore,
     task::JoinSet,
 };
@@ -296,7 +296,7 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
 
     let mut buf = [0u8; 128 << 10];
 
-    let src_file = match File::open(&src).await {
+    let mut src_file = match File::open(&src).await {
         Ok(f) => f,
         Err(e) => {
             progress.files.failed.fetch_add(1, Ordering::Relaxed);
@@ -326,13 +326,12 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
         }
     };
 
-    let mut src_read = BufReader::new(src_file);
     let mut dest_write = BufWriter::new(dst_file);
 
     progress.files.in_progress.fetch_add(1, Ordering::Relaxed);
 
     let result = loop {
-        let n = match src_read.read(&mut buf).await {
+        let n = match src_file.read(&mut buf).await {
             Ok(0) => break Ok(()),
             Ok(n) => n,
             Err(e) => break Err(e),
@@ -353,14 +352,6 @@ async fn copy_file<K: Hash + PartialEq, F: Fn(&K, &FileProgress)>(
 
     match result {
         Ok(()) => {
-            src_read.flush().await.map_err(|e| {
-                progress.files.failed.fetch_add(1, Ordering::Relaxed);
-                SyncError::CopyFailed {
-                    src: src.clone(),
-                    dest: dest.clone(),
-                    err: e,
-                }
-            })?;
             dest_write.flush().await.map_err(|e| {
                 progress.files.failed.fetch_add(1, Ordering::Relaxed);
                 SyncError::CopyFailed {
@@ -413,7 +404,7 @@ mod tests {
 
         assert!(cmp_file(src.clone(), dest.clone()).await.unwrap());
 
-        src_file.write_all(b"hello world").await.unwrap();
+        src_file.write_all(b"HELLO world").await.unwrap();
 
         assert!(!cmp_file(src.clone(), dest.clone()).await.unwrap());
     }
