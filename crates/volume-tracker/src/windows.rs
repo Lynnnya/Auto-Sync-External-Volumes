@@ -2,7 +2,7 @@ use std::{
     ffi::{c_ulong, c_ushort, c_void},
     fmt::{Debug, Display},
     hash::Hash,
-    marker::PhantomData,
+    marker::{PhantomData, PhantomPinned},
     ops::{Deref, DerefMut},
     path::PathBuf,
     pin::Pin,
@@ -248,6 +248,7 @@ struct Context {
     aborter: Arc<AbortHandleHolder<VolumeName>>,
     new_device_queue: Arc<DashSet<VolumeName>>,
     mount_mgr: Arc<MountMgr>,
+    _pin: PhantomPinned,
 }
 
 impl<
@@ -305,6 +306,7 @@ impl<
                 aborter,
                 new_device_queue: queue,
                 mount_mgr: Arc::new(MountMgr::new()?),
+                _pin: PhantomPinned,
             }),
             spawner: callback,
             _wmi: WmiObserver::new(inner_cb)?,
