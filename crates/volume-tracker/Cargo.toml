@@ -1,0 +1,21 @@
+[package]
+name = "volume-tracker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dashmap = "6.0.1"
+tokio = { version = "1.39.3", features = ["rt", "rt-multi-thread", "macros", "time", "signal", "fs", "sync"] }
+windows = { version = "0.58.0", features = [
+                "implement",
+                "Win32", "Win32_Foundation", 
+                "Win32_Devices", "Win32_Devices_DeviceAndDriverInstallation", 
+                "Win32_Storage", "Win32_Storage_FileSystem",
+                "Win32_System_IO", "Win32_System_Com", "Win32_System_Rpc",
+                "Win32_System", "Win32_System_Ioctl", "Win32_System_Wmi",
+                "Win32_Security"
+         ] }
+thiserror = { workspace = true }
+log = { workspace = true }
+windows-core = "0.58.0"
+serde = { workspace = true, features = ["derive"] }

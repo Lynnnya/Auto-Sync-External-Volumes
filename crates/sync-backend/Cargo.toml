@@ -1,0 +1,19 @@
+[package]
+name = "sync-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "signal", "fs", "io-util"] }
+flume = { workspace = true }
+volume-tracker = { workspace = true }
+thiserror = { workspace = true }
+env_logger = "0.11.5"
+log = { workspace = true }
+serde_yaml = "0.9.34"
+clap = { version = "4.5.16", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+indicatif = "0.17.8"
+
+[dev-dependencies]
+tempfile = "3.12.0"
