@@ -1,0 +1,29 @@
+[package]
+name = "file-syncer"
+version = { workspace = true }
+description = { workspace = true }
+authors = { workspace = true }
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "file_syncer_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0-rc", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0-rc", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0.0-rc"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+env_logger = "0.11.5"
+
+tokio = { workspace = true, features = ["macros", "time", "signal", "fs", "io-util"] }
+
+flume = { workspace = true }
+log = { workspace = true }
+sync-backend = { workspace = true }
+volume-tracker = { workspace = true }

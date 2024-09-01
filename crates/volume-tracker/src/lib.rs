@@ -155,7 +155,7 @@ where
     /// The device identifier.
     type Device: Device;
     /// The error type.
-    type Error;
+    type Error: std::error::Error;
 
     /// Create a new notification source with the given callback.
     fn new(callback: F) -> Result<Self, Self::Error>;
@@ -173,6 +173,24 @@ where
     fn reset(&mut self) -> Result<(), Self::Error>;
 }
 
+#[derive(Clone)]
+/// An error indicating that the platform is not supported.
+pub struct NotImplementedError;
+
+impl std::fmt::Display for NotImplementedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Not implemented")
+    }
+}
+
+impl std::fmt::Debug for NotImplementedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NotImplementedError")
+    }
+}
+
+impl std::error::Error for NotImplementedError {}
+
 /// A dummy [`NotificationSource`] that does nothing on unimplemented platforms.
 pub struct UnimplementedNotifier<'a, F>(PhantomData<&'a F>);
 
@@ -185,7 +203,7 @@ where
 {
     type FileSystem = UnimplementedFileSystem;
     type Device = UnimplementedDevice;
-    type Error = &'static str;
+    type Error = NotImplementedError;
 
     fn new(_: F) -> Result<Self, Self::Error> {
         Ok(Self(PhantomData))

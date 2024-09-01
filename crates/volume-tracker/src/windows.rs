@@ -244,6 +244,7 @@ impl<T> DerefMut for UnsafeSync<T> {
     }
 }
 
+unsafe impl<T> Send for UnsafeSync<T> {}
 unsafe impl<T> Sync for UnsafeSync<T> {}
 
 /// A file system notification source for Windows using the Plug and Play manager.

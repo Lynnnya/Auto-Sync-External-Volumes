@@ -91,6 +91,9 @@ pub struct Observer<'cb> {
     _marker: PhantomData<&'cb ()>,
 }
 
+unsafe impl<'cb> Send for Observer<'cb> {}
+unsafe impl<'cb> Sync for Observer<'cb> {}
+
 impl<'cb> Observer<'cb> {
     pub fn new<F: Fn() + Send + Sync + 'cb>(callback: F) -> Result<Self, Error> {
         unsafe {
